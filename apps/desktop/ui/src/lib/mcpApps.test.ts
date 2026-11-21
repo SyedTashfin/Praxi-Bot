@@ -34,6 +34,7 @@ import {
   signInMcpServer,
   splitArgs,
   statusTone,
+  storeHeaderTemplate,
   toggleBotInScope,
   withFolder
 } from "./mcpApps.ts";
@@ -65,6 +66,61 @@ test("filterCatalog by query, category and Turkish-insensitive text", () => {
   assert.ok(search.every((c) => c.category === "search"));
   assert.deepEqual(filterCatalog(MOCK_MCP_CATALOG, "zzz", ALL_CATEGORIES), []);
   assert.ok(catalogCategories(MOCK_MCP_CATALOG).includes("developer"));
+});
+
+test("configFromCatalog maps the entry's secret_env and secret_headers", () => {
+  // The catalog says which variable each secret belongs to. Before this fix the
+  // variable was named after the secret, so the server never saw the key.
+  const brave = configFromCatalog({
+    ...entry("brave-search"),
+    install: {
+      transport: "stdio",
+      command: "npx",
+      args: ["-y", "@brave/brave-search-mcp-server@2.2.0"],
+      secret_env: { BRAVE_API_KEY: "mcp/brave-token" },
+      required_secrets: [
+        {
+          name: "mcp/brave-token",
+          label: "Brave Search API key",
+          help_url: "https://api-dashboard.search.brave.com/"
+        }
+      ]
+    }
+  });
+  assert.deepEqual(brave.secret_env, {
+    BRAVE_API_KEY: "mcp_brave_search_mcp_brave_token"
+  });
+
+  // An http entry names its header and may use a template.
+  const gh = configFromCatalog({
+    ...entry("github"),
+    install: {
+      transport: "http",
+      url: "https://api.githubcopilot.com/mcp/",
+      secret_headers: { Authorization: "Bearer {secret:mcp/github-token}" },
+      required_secrets: [
+        {
+          name: "mcp/github-token",
+          label: "GitHub fine-grained personal access token",
+          help_url: "https://github.com/settings/personal-access-tokens/new"
+        }
+      ]
+    }
+  });
+  assert.deepEqual(gh.secret_headers, {
+    Authorization: "Bearer {secret:mcp_github_mcp_github_token}"
+  });
+  // A template references the secret; it never carries a value.
+  assert.equal(JSON.stringify(gh).includes("Bearer mcp_github_"), false);
+});
+
+test("storeHeaderTemplate rewrites only what the placeholder names", () => {
+  const upper = (name: string) => name.toUpperCase();
+  assert.equal(
+    storeHeaderTemplate("token {secret:a/b} and {secret:c}", upper),
+    "token {secret:A/B} and {secret:C}"
+  );
+  assert.equal(storeHeaderTemplate("Basic abc", upper), "Basic abc");
 });
 
 test("configFromCatalog references secrets by name, never by value", () => {

@@ -70,8 +70,11 @@ export function secretStoreName(entryId: string, secretName: string): string {
 
 /**
  * Server config for a catalog entry.  Secrets are referenced by NAME: a stdio
- * server receives them as environment variables, an http server as the
- * `Authorization` header (the secret holds the full header value).
+ * server receives them as environment variables, an http server as a header.
+ * The catalog says which variable or header each secret belongs to
+ * (`install.secret_env`, `install.secret_headers`); an entry that predates
+ * those maps falls back to naming the variable after the secret, which is what
+ * this function always did.
  */
 export function configFromCatalog(
   entry: McpCatalogEntry,
@@ -93,24 +96,37 @@ export function configFromCatalog(
   } else {
     config.url = install.url;
   }
-  if (install.required_secrets.length > 0) {
-    if (install.transport === "stdio") {
-      config.secret_env = Object.fromEntries(
-        install.required_secrets.map((s) => [
-          s.name,
-          secretStoreName(entry.id, s.name)
-        ])
-      );
-    } else {
-      config.secret_headers = {
-        Authorization: secretStoreName(
-          entry.id,
-          install.required_secrets[0].name
-        )
-      };
-    }
+  const store = (name: string) => secretStoreName(entry.id, name);
+  const env = Object.entries(install.secret_env ?? {});
+  if (env.length > 0) {
+    config.secret_env = Object.fromEntries(env.map(([key, name]) => [key, store(name)]));
+  } else if (install.transport === "stdio" && install.required_secrets.length > 0) {
+    config.secret_env = Object.fromEntries(
+      install.required_secrets.map((s) => [s.name, store(s.name)])
+    );
+  }
+  const headers = Object.entries(install.secret_headers ?? {});
+  if (headers.length > 0) {
+    config.secret_headers = Object.fromEntries(
+      headers.map(([header, spec]) => [header, storeHeaderTemplate(spec, store)])
+    );
+  } else if (install.transport === "http" && install.required_secrets.length > 0) {
+    config.secret_headers = {
+      Authorization: store(install.required_secrets[0].name)
+    };
   }
   return config;
+}
+
+/** A catalog header value naming its secret: `Bearer {secret:mcp/github-token}`. */
+const SECRET_PLACEHOLDER = /\{secret:([^}]*)\}/g;
+
+/** Point a header template at the stored name of the secret it names. */
+export function storeHeaderTemplate(
+  spec: string,
+  store: (name: string) => string
+): string {
+  return spec.replace(SECRET_PLACEHOLDER, (_match, name: string) => `{secret:${store(name)}}`);
 }
 
 const FS_SERVER_PACKAGE = "@modelcontextprotocol/server-filesystem";
