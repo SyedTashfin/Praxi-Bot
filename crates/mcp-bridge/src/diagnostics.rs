@@ -292,6 +292,21 @@ mod tests {
         Redactor::new(values, None)
     }
 
+    /// A rendered header value (`Bearer <token>`) must mask the bare token too:
+    /// a server that quotes only the credential cannot leak it that way.
+    #[test]
+    fn redacts_a_bearer_header_value_and_its_bare_token() {
+        let redactor = plain(["Bearer ghp_example_0123456789"]);
+        assert_eq!(
+            redactor.scrub("header was Bearer ghp_example_0123456789."),
+            "header was [REDACTED]."
+        );
+        assert_eq!(
+            redactor.scrub("token ghp_example_0123456789 alone"),
+            "token [REDACTED] alone"
+        );
+    }
+
     #[test]
     fn redacts_overlapping_multiline_and_cutoff_secrets_without_unbounded_expansion() {
         let redactor = plain([

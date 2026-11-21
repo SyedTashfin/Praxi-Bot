@@ -109,6 +109,18 @@ fn config_for(entry: &CatalogEntry, trust_hints: bool) -> McpServerConfig {
     })
 }
 
+/// The secret a `secret_headers` value names, when it is a template
+/// (`Bearer {secret:NAME}`); `None` when the value is a plain secret name.
+///
+/// Mirrors `transport::secret_header_names`, which is crate-private: an
+/// integration test can only see the public surface.
+fn header_secret(value: &str) -> Option<&str> {
+    let at = value.find("{secret:")?;
+    let rest = &value[at + "{secret:".len()..];
+    let end = rest.find('}')?;
+    Some(&rest[..end])
+}
+
 fn store_for(entry: &CatalogEntry) -> Arc<MemoryStore> {
     let store = Arc::new(MemoryStore::new());
     store.set("contract/fixture", SECRET).unwrap();
@@ -201,13 +213,24 @@ fn leg_config(entry: &CatalogEntry, f: &mut Failures) {
         }),
     }
     // Every secret reference is declared, every declared secret is used, all under `mcp/`.
+    //
+    // A header value may name its secret once (`Bearer {secret:NAME}`): the name
+    // inside the placeholder is the reference and the rest is literal text, the
+    // same rule the unit test in `catalog.rs` applies through the crate-private
+    // parser.  An integration test only sees the public surface, so the tiny
+    // scan lives at the bottom of this file.
     let declared: BTreeSet<&str> = i.required_secrets.iter().map(|s| s.name.as_str()).collect();
-    let used: BTreeSet<&str> = i
-        .secret_env
-        .values()
-        .chain(i.secret_headers.values())
-        .map(String::as_str)
-        .collect();
+    let mut used: BTreeSet<&str> = i.secret_env.values().map(String::as_str).collect();
+    for value in i.secret_headers.values() {
+        match header_secret(value) {
+            Some(name) => {
+                used.insert(name);
+            }
+            None => {
+                used.insert(value.as_str());
+            }
+        }
+    }
     check(f, id, "config", declared == used, || {
         format!("required_secrets {declared:?} != referenced {used:?}")
     });

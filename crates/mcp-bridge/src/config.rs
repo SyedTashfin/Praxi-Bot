@@ -108,6 +108,13 @@ pub struct McpServerConfig {
     pub category: Option<PermissionCategory>,
     /// HTTP header name -> secret name.  Resolved through the secret store
     /// only at connect time; the value is never stored, logged or serialized.
+    ///
+    /// A value may name its secret once instead — `Bearer {secret:NAME}` — and
+    /// the fetched value is substituted for the placeholder, so a declarative
+    /// entry can send a scheme without asking the user to paste one.  At most
+    /// one placeholder is allowed, and `NAME` obeys the same rules as a plain
+    /// value (a valid [`SecretRef`], never a managed OAuth record, never
+    /// `composio/`).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub secret_headers: BTreeMap<String, String>,
     /// Environment variable (stdio) -> secret name.  Same rules as
@@ -687,8 +694,10 @@ mod tests {
         );
         assert!(h.validate().is_err(), "two secrets");
 
-        h.secret_headers
-            .insert("Authorization".into(), "Bearer {secret:composio/api-key}".into());
+        h.secret_headers.insert(
+            "Authorization".into(),
+            "Bearer {secret:composio/api-key}".into(),
+        );
         assert!(h.validate().is_err(), "reserved name through a template");
 
         h.secret_headers

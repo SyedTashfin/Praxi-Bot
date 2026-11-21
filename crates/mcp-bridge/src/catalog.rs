@@ -51,6 +51,11 @@ pub struct CatalogInstall {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub secret_env: BTreeMap<String, String>,
     /// Header -> secret name (http).
+    ///
+    /// The value may name its secret once — `Bearer {secret:NAME}` — which the
+    /// config keeps verbatim and `resolve_secrets` substitutes at connect time.
+    /// The same string therefore means the same thing here and in `mcp.toml`;
+    /// see `McpServerConfig::secret_headers`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub secret_headers: BTreeMap<String, String>,
     /// Secrets the user must provide first.
@@ -383,8 +388,8 @@ pub fn check_stdio_package_pin(id: &str, command: &str, args: &[String]) -> Resu
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::transport::secret_header_names;
     use crate::McpServerConfig;
+    use crate::transport::secret_header_names;
     use std::collections::HashSet;
 
     #[test]
@@ -417,8 +422,8 @@ mod tests {
             let declared: HashSet<_> = e.install.required_secrets.iter().map(|s| &s.name).collect();
             let mut used: HashSet<&String> = e.install.secret_env.values().collect();
             for value in e.install.secret_headers.values() {
-                let named = secret_header_names(value)
-                    .unwrap_or_else(|why| panic!("{}: {why}", e.id));
+                let named =
+                    secret_header_names(value).unwrap_or_else(|why| panic!("{}: {why}", e.id));
                 if named.is_empty() {
                     used.insert(value);
                 } else {
@@ -471,10 +476,7 @@ mod tests {
             one
         ));
         // Names something that is not declared.
-        assert!(!ok(
-            r#"{"Authorization":"Bearer {secret:mcp/other}"}"#,
-            one
-        ));
+        assert!(!ok(r#"{"Authorization":"Bearer {secret:mcp/other}"}"#, one));
         // Unterminated placeholder.
         assert!(!ok(r#"{"Authorization":"Bearer {secret:mcp/tok"}"#, one));
     }

@@ -13,6 +13,11 @@
 //! * Secrets: `secret_headers` / `secret_env` map a header or variable to a
 //!   *secret name*, resolved through [`McpManager::with_secret_store`] only at
 //!   connect time; values never reach the config file, `Debug` or logs.
+//! * A `secret_headers` value may name its secret once —
+//!   `Authorization = "Bearer {secret:mcp/github-token}"` — and the fetched
+//!   value is substituted for the placeholder, so an entry can send a scheme
+//!   without asking the user to paste one.  At most one placeholder; a value
+//!   without one keeps its old meaning (the secret name, used verbatim).
 //!
 //! # Example `mcp.toml`
 //!
