@@ -173,14 +173,86 @@ pub(crate) fn resolve_secrets(
                 ))
             })
     };
-    for (k, name) in &config.secret_headers {
+    for (k, template) in &config.secret_headers {
         out.headers
-            .insert(k.clone(), fetch("secret_headers", k, name)?);
+            .insert(k.clone(), render_header(&fetch, id, k, template)?);
     }
     for (k, name) in &config.secret_env {
         out.env.insert(k.clone(), fetch("secret_env", k, name)?);
     }
     Ok(out)
+}
+
+/// Opening of a header-secret placeholder: `Bearer {secret:mcp/github-token}`.
+const SECRET_PLACEHOLDER_OPEN: &str = "{secret:";
+
+/// Names a `secret_headers` value names, in order, so `validate()` can hold a
+/// template's secret to the same rules as a plain name.  An empty result means
+/// the value is a plain secret name; `Err` means an unterminated placeholder.
+pub(crate) fn secret_header_names(spec: &str) -> std::result::Result<Vec<&str>, String> {
+    const OPEN: &str = "{secret:";
+    let mut names = Vec::new();
+    let mut rest = spec;
+    while let Some(at) = rest.find(OPEN) {
+        let after = &rest[at + OPEN.len()..];
+        let Some(end) = after.find('}') else {
+            return Err("has an unterminated secret placeholder".to_owned());
+        };
+        names.push(&after[..end]);
+        rest = &after[end + 1..];
+    }
+    Ok(names)
+}
+
+/// Render one `secret_headers` value.
+///
+/// A value without a placeholder is a secret name, used exactly as before, so
+/// every existing configuration keeps working.  A value that names its secret
+/// once — `Bearer {secret:NAME}` — gets the fetched value substituted, which is
+/// how a catalog entry asks for a bare token but sends a `Bearer` header.
+///
+/// The fetched value is never echoed in an error: the messages name the header
+/// and the secret only.
+fn render_header(
+    fetch: &dyn Fn(&str, &str, &str) -> Result<String>,
+    server: &str,
+    header: &str,
+    template: &str,
+) -> Result<String> {
+    if !template.contains(SECRET_PLACEHOLDER_OPEN) {
+        return fetch("secret_headers", header, template);
+    }
+    let mut rest = template;
+    let mut rendered = String::with_capacity(template.len());
+    let mut substitutions = 0usize;
+    while let Some(at) = rest.find(SECRET_PLACEHOLDER_OPEN) {
+        let after = &rest[at + SECRET_PLACEHOLDER_OPEN.len()..];
+        let Some(end) = after.find('}') else {
+            return Err(McpError::Config(format!(
+                "server `{server}`: `secret_headers.{header}` has an unterminated secret placeholder"
+            )));
+        };
+        let name = &after[..end];
+        let value = fetch("secret_headers", header, name)?;
+        // A header value cannot carry meaningful whitespace, and a token with
+        // a stray newline is a paste accident. Refuse instead of guessing.
+        if value.is_empty() || value.chars().any(char::is_whitespace) {
+            return Err(McpError::Config(format!(
+                "server `{server}`: secret `{name}` for `secret_headers.{header}` is empty or contains whitespace"
+            )));
+        }
+        rendered.push_str(&rest[..at]);
+        rendered.push_str(&value);
+        rest = &after[end + 1..];
+        substitutions += 1;
+    }
+    if substitutions != 1 {
+        return Err(McpError::Config(format!(
+            "server `{server}`: `secret_headers.{header}` names {substitutions} secrets; exactly one is allowed"
+        )));
+    }
+    rendered.push_str(rest);
+    Ok(rendered)
 }
 
 fn transport_err(server: &str, e: impl std::fmt::Display) -> McpError {
@@ -551,6 +623,68 @@ mod tests {
         let http = http_config("s", "https://x/mcp", &BTreeMap::new(), &r.headers).unwrap();
         assert!(http.custom_headers.values().all(HeaderValue::is_sensitive));
         assert!(!format!("{http:?}").contains("s3cr3t-value"));
+    }
+
+    /// A header value may name its secret once (`Bearer {secret:NAME}`) so a
+    /// catalog entry can ask for a bare token and still send a scheme.  A value
+    /// without a placeholder keeps its old meaning: a secret name, used as is.
+    #[test]
+    fn header_templates_substitute_one_secret_and_keep_old_values_working() {
+        let store = Fake(BTreeMap::from([(
+            "mcp/github-token".to_owned(),
+            "ghp_example".to_owned(),
+        )]));
+
+        let mut templated = McpServerConfig::http("gh", "https://x/mcp");
+        templated
+            .secret_headers
+            .insert("Authorization".into(), "Bearer {secret:mcp/github-token}".into());
+        let r = resolve_secrets(&templated, Some(&store)).unwrap();
+        assert_eq!(r.headers["Authorization"], "Bearer ghp_example");
+        assert!(!format!("{r:?}").contains("ghp_example"));
+
+        // No placeholder: today's behaviour, the value is the secret name.
+        let mut plain = McpServerConfig::http("gh", "https://x/mcp");
+        plain
+            .secret_headers
+            .insert("Authorization".into(), "mcp/github-token".into());
+        let r = resolve_secrets(&plain, Some(&store)).unwrap();
+        assert_eq!(r.headers["Authorization"], "ghp_example");
+
+        // A template that names two secrets, or none, is refused.
+        let mut two = McpServerConfig::http("gh", "https://x/mcp");
+        two.secret_headers.insert(
+            "Authorization".into(),
+            "{secret:mcp/github-token}{secret:mcp/github-token}".into(),
+        );
+        let err = resolve_secrets(&two, Some(&store)).unwrap_err().to_string();
+        assert!(err.contains("exactly one"), "{err}");
+        assert!(!err.contains("ghp_example"), "{err}");
+
+        let mut unterminated = McpServerConfig::http("gh", "https://x/mcp");
+        unterminated
+            .secret_headers
+            .insert("Authorization".into(), "Bearer {secret:mcp/github-token".into());
+        assert!(matches!(
+            resolve_secrets(&unterminated, Some(&store)),
+            Err(McpError::Config(_))
+        ));
+    }
+
+    /// A token carrying whitespace (a wrapped paste) is refused with a message
+    /// that names the secret, never the value.
+    #[test]
+    fn a_secret_with_whitespace_is_refused_in_a_header_template() {
+        let store = Fake(BTreeMap::from([(
+            "mcp/padded".to_owned(),
+            " ghp_example \n".to_owned(),
+        )]));
+        let mut cfg = McpServerConfig::http("gh", "https://x/mcp");
+        cfg.secret_headers
+            .insert("Authorization".into(), "Bearer {secret:mcp/padded}".into());
+        let err = resolve_secrets(&cfg, Some(&store)).unwrap_err().to_string();
+        assert!(err.contains("whitespace"), "{err}");
+        assert!(!err.contains("ghp_example"), "{err}");
     }
 
     /// Review finding 1: a configured header or child variable must never

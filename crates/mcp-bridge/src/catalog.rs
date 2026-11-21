@@ -80,6 +80,48 @@ pub struct CatalogEntry {
     pub install: CatalogInstall,
 }
 
+/// A catalog `secret_headers` value names its secret in the same form the
+/// config stores (`Authorization: Bearer {secret:mcp/github-token}`), so
+/// `validate()` and `resolve_secrets` see exactly what the catalog shipped.
+/// Exactly one secret per header, and it must be declared, or the catalog is
+/// wrong: fail it here rather than let it misbehave at connect time.
+///
+/// # Errors
+/// [`McpError::Config`] naming the entry and the header.
+pub fn check_secret_header_templates(entry: &CatalogEntry) -> Result<()> {
+    if entry.install.secret_headers.is_empty() {
+        return Ok(());
+    }
+    let declared: Vec<&str> = entry
+        .install
+        .required_secrets
+        .iter()
+        .map(|s| s.name.as_str())
+        .collect();
+    for (header, value) in &entry.install.secret_headers {
+        let named = crate::transport::secret_header_names(value).map_err(|why| {
+            McpError::Config(format!(
+                "server `{}`: `secret_headers.{header}` {why}",
+                entry.id
+            ))
+        })?;
+        if named.len() != 1 {
+            return Err(McpError::Config(format!(
+                "server `{}`: `secret_headers.{header}` names {} secrets; exactly one is allowed",
+                entry.id,
+                named.len()
+            )));
+        }
+        if !declared.contains(&named[0]) {
+            return Err(McpError::Config(format!(
+                "server `{}`: `secret_headers.{header}` names `{}`, which is not declared in `required_secrets`",
+                entry.id, named[0]
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// The catalog shipped with the bot.
 ///
 /// # Errors
@@ -96,6 +138,7 @@ pub fn builtin_catalog() -> Result<Vec<CatalogEntry>> {
                 entry.install.args.as_deref().unwrap_or(&[]),
             )?;
         }
+        check_secret_header_templates(entry)?;
     }
     Ok(entries)
 }
@@ -340,6 +383,7 @@ pub fn check_stdio_package_pin(id: &str, command: &str, args: &[String]) -> Resu
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::transport::secret_header_names;
     use crate::McpServerConfig;
     use std::collections::HashSet;
 
@@ -368,14 +412,25 @@ mod tests {
             cfg.secret_env.clone_from(&e.install.secret_env);
             cfg.secret_headers.clone_from(&e.install.secret_headers);
             cfg.validate().unwrap_or_else(|er| panic!("{}: {er}", e.id));
-            // Every referenced secret is declared, and vice versa.
+            // Every referenced secret is declared, and vice versa.  A header
+            // template (`Bearer {secret:NAME}`) references the named secret.
             let declared: HashSet<_> = e.install.required_secrets.iter().map(|s| &s.name).collect();
-            let used: HashSet<_> = e
-                .install
-                .secret_env
-                .values()
-                .chain(e.install.secret_headers.values())
-                .collect();
+            let mut used: HashSet<&String> = e.install.secret_env.values().collect();
+            for value in e.install.secret_headers.values() {
+                let named = secret_header_names(value)
+                    .unwrap_or_else(|why| panic!("{}: {why}", e.id));
+                if named.is_empty() {
+                    used.insert(value);
+                } else {
+                    used.extend(named.iter().filter_map(|n| {
+                        e.install
+                            .required_secrets
+                            .iter()
+                            .map(|s| &s.name)
+                            .find(|name| name.as_str() == *n)
+                    }));
+                }
+            }
             assert_eq!(declared, used, "{}", e.id);
         }
         for want in [
@@ -387,6 +442,41 @@ mod tests {
         ] {
             assert!(ids.contains(want), "{want}");
         }
+    }
+
+    /// A header template is only meaningful when it names one declared secret;
+    /// anything else fails the catalog instead of the connection.
+    #[test]
+    fn header_templates_must_name_one_declared_secret() {
+        let entry = |headers: &str, secrets: &str| -> CatalogEntry {
+            serde_json::from_str(&format!(
+                r#"{{"id":"x","name":"X","description":"d","category":"accounts",
+                     "homepage":"https://example.com","icon":null,
+                     "install":{{"transport":"http","url":"https://example.com/mcp",
+                                 "secret_headers":{headers},"required_secrets":{secrets}}}}}"#
+            ))
+            .expect("test entry parses")
+        };
+        let one = r#"[{"name":"mcp/tok","label":"Token"}]"#;
+        let ok = |headers: &str, secrets: &str| {
+            check_secret_header_templates(&entry(headers, secrets)).is_ok()
+        };
+
+        assert!(ok(r#"{"Authorization":"Bearer {secret:mcp/tok}"}"#, one));
+        // No placeholder: the value would be a secret name, not a header value.
+        assert!(!ok(r#"{"Authorization":"mcp/tok"}"#, one));
+        // Two secrets in one header.
+        assert!(!ok(
+            r#"{"Authorization":"{secret:mcp/tok} {secret:mcp/tok}"}"#,
+            one
+        ));
+        // Names something that is not declared.
+        assert!(!ok(
+            r#"{"Authorization":"Bearer {secret:mcp/other}"}"#,
+            one
+        ));
+        // Unterminated placeholder.
+        assert!(!ok(r#"{"Authorization":"Bearer {secret:mcp/tok"}"#, one));
     }
 
     #[test]
