@@ -48,27 +48,14 @@
   {
     "id": "gitlab",
     "name": "GitLab",
-    "description": "Projects, issues and merge requests on GitLab.",
+    "description": "Projects, issues and merge requests on GitLab.com. Sign in with your GitLab account; the top-level group must have the MCP server enabled.",
     "category": "accounts",
-    "homepage": "https://gitlab.com/gitlab-org/gitlab",
+    "homepage": "https://docs.gitlab.com/user/model_context_protocol/mcp_server/",
     "icon": "gitlab",
     "install": {
-      "transport": "stdio",
-      "command": "npx",
-      "args": [
-        "-y",
-        "@modelcontextprotocol/server-gitlab@2025.4.25"
-      ],
-      "secret_env": {
-        "GITLAB_PERSONAL_ACCESS_TOKEN": "mcp/gitlab-token"
-      },
-      "required_secrets": [
-        {
-          "name": "mcp/gitlab-token",
-          "label": "GitLab personal access token",
-          "help_url": "https://gitlab.com/-/user_settings/personal_access_tokens"
-        }
-      ]
+      "transport": "http",
+      "url": "https://gitlab.com/api/v4/mcp",
+      "required_secrets": []
     }
   },
   {
@@ -201,7 +188,9 @@
       "command": "npx",
       "args": [
         "-y",
-        "@modelcontextprotocol/server-brave-search@0.6.2"
+        "@brave/brave-search-mcp-server@2.2.0",
+        "--transport",
+        "stdio"
       ],
       "secret_env": {
         "BRAVE_API_KEY": "mcp/brave-token"
