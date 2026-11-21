@@ -2796,14 +2796,16 @@ mod tests {
         assert!(cat.len() >= 20, "{}", cat.len());
         let github = cat.iter().find(|e| e.id == "github").unwrap();
         assert_eq!(github.icon.as_deref(), Some("github"));
-        assert_eq!(github.install.transport, McpTransportKind::Stdio);
+        // GitHub moved to the hosted endpoint: a bearer header whose value is
+        // the secret, not an npx package reading an env variable.
+        assert_eq!(github.install.transport, McpTransportKind::Http);
         assert_eq!(
             github
                 .install
-                .secret_env
-                .get("GITHUB_PERSONAL_ACCESS_TOKEN")
+                .secret_headers
+                .get("Authorization")
                 .map(String::as_str),
-            Some("mcp/github-token")
+            Some("Bearer {secret:mcp/github-token}")
         );
         assert!(cat.iter().any(|e| e.id == "filesystem" && e.icon.is_none()));
         for id in ["context7", "home-assistant", "playwright"] {

@@ -22,25 +22,21 @@
   {
     "id": "github",
     "name": "GitHub",
-    "description": "Repositories, issues, pull requests and code search.",
+    "description": "Repositories, issues, pull requests and code search. Needs a personal access token: prefer a fine-grained one with only the permissions you use.",
     "category": "accounts",
     "homepage": "https://github.com/github/github-mcp-server",
     "icon": "github",
     "install": {
-      "transport": "stdio",
-      "command": "npx",
-      "args": [
-        "-y",
-        "@modelcontextprotocol/server-github@2025.4.8"
-      ],
-      "secret_env": {
-        "GITHUB_PERSONAL_ACCESS_TOKEN": "mcp/github-token"
+      "transport": "http",
+      "url": "https://api.githubcopilot.com/mcp/",
+      "secret_headers": {
+        "Authorization": "Bearer {secret:mcp/github-token}"
       },
       "required_secrets": [
         {
           "name": "mcp/github-token",
-          "label": "GitHub personal access token",
-          "help_url": "https://github.com/settings/tokens"
+          "label": "GitHub fine-grained personal access token (least privilege)",
+          "help_url": "https://github.com/settings/personal-access-tokens/new"
         }
       ]
     }
